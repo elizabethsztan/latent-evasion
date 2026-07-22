@@ -38,15 +38,20 @@ class LanguageModel(ABC):
                 elif self.quantization_config == "8bit":
                     bnb_config = BitsAndBytesConfig(load_in_8bit=True)
             
-            # Load Model
+            # Load Model. device_map is an accelerate/CUDA placement path and does
+            # not support MPS/CPU, so only use it for CUDA and otherwise place the
+            # model explicitly via .to(device).
+            use_device_map = str(self.device).startswith("cuda")
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 token=token,
                 quantization_config=bnb_config,
-                device_map=self.device,
+                device_map=self.device if use_device_map else None,
                 torch_dtype=torch.float16 if bnb_config is None else None,
                 trust_remote_code=True
             )
+            if not use_device_map and bnb_config is None:
+                self.model = self.model.to(self.device)
             self.model.eval()
             self.model.requires_grad_(False)
 
