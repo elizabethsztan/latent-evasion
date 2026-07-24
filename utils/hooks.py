@@ -62,6 +62,56 @@ def pipeline_delta_hook(
     return hook
 
 
+def generated_projection_hook(
+    prompt_probe: Dict[str, torch.Tensor],
+    gen_probes: Dict[int, Dict[str, torch.Tensor]],
+    beta: float,
+    prompt_margin: float,
+    gen_margin: float,
+    layer_idx: int,
+    first_layer: int,
+    max_pos: int,
+    step_state: Dict[str, int],
+    eps: float = 1e-12,
+):
+    """Live projection whose direction depends on token position.
+
+    Prefill forwards (seq_len > 1, the prompt) project with prompt_probe (the
+    post-instruction probe) using prompt_margin. Decode forwards (seq_len == 1,
+    one generated token) project with gen_probes[min(step, max_pos)] using
+    gen_margin. The lowest-index hooked layer advances the shared step_state
+    (forward hooks fire in layer order), so every hooked layer within a forward
+    reads the same generated position; step resets to -1 on every prefill, so
+    each new generation call re-initialises itself.
+    """
+
+    def hook(module, inputs, output):
+        h = hidden_from_output(output)
+        if h.shape[1] > 1:  # prefill (prompt tokens)
+            if layer_idx == first_layer:
+                step_state["step"] = -1
+            probe = prompt_probe
+            margin = prompt_margin
+        else:  # decode step (one generated token)
+            if layer_idx == first_layer:
+                step_state["step"] += 1
+            probe = gen_probes[min(step_state["step"], max_pos)]
+            margin = gen_margin
+
+        w_local = probe["w"].to(device=h.device, dtype=h.dtype)
+        b_local = probe["b"].to(device=h.device, dtype=h.dtype)
+        m_local = torch.as_tensor(margin, device=h.device, dtype=h.dtype)
+        w_norm_sq = torch.sum(w_local * w_local).clamp_min(eps)
+
+        raw_score = (h * w_local.view(1, 1, -1)).sum(dim=-1, keepdim=True) + b_local.view(1, 1, 1)
+        score = raw_score + m_local.view(1, 1, 1)
+        h_mod = h - (beta * (score / w_norm_sq) * w_local.view(1, 1, -1))
+
+        return replace_hidden(output, h_mod)
+
+    return hook
+
+
 def add_hook(delta: torch.Tensor):
     def hook(module, inputs, output):
         h = hidden_from_output(output)

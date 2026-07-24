@@ -76,6 +76,67 @@ def load_svms(svm_dir: str, layer_indices: List[int], device: torch.device) -> P
     return probes
 
 
+def load_generated_svms(
+    gen_svm_dir: str,
+    layer_indices: List[int],
+    device: torch.device,
+    max_pos: Optional[int] = None,
+) -> tuple[Dict[int, Dict[int, Dict[str, torch.Tensor]]], int]:
+    """Load per-(layer, generated-position) SVM probes (svm_layerLL_posPP.pt).
+
+    Returns (probes, resolved_max_pos) where probes[layer][pos] = {"w", "b"} for
+    positions 0..resolved_max_pos. resolved_max_pos is min(max_pos, available)
+    and is kept consistent across all requested layers so a decode step can index
+    min(step, resolved_max_pos) for any layer.
+    """
+    if not os.path.isdir(gen_svm_dir):
+        raise FileNotFoundError(f"Generated SVM directory not found: {gen_svm_dir}")
+
+    names = os.listdir(gen_svm_dir)
+    per_layer_caps: Dict[int, int] = {}
+    for layer_idx in layer_indices:
+        prefix = f"svm_layer{layer_idx:02d}_pos"
+        positions = sorted(
+            int(n[len(prefix):-len(".pt")])
+            for n in names
+            if n.startswith(prefix) and n.endswith(".pt") and n[len(prefix):-len(".pt")].isdigit()
+        )
+        if not positions:
+            raise ValueError(f"No svm_layer{layer_idx:02d}_posXX.pt files found in {gen_svm_dir}")
+        available_max = positions[-1]
+        cap = available_max if max_pos is None else min(max_pos, available_max)
+        if cap < 0:
+            raise ValueError(f"--max_pos must be >= 0, got {max_pos}")
+        per_layer_caps[layer_idx] = cap
+
+    resolved_max = min(per_layer_caps.values())
+
+    probes: Dict[int, Dict[int, Dict[str, torch.Tensor]]] = {}
+    for layer_idx in layer_indices:
+        layer_probes: Dict[int, Dict[str, torch.Tensor]] = {}
+        for pos in range(resolved_max + 1):
+            path = os.path.join(gen_svm_dir, f"svm_layer{layer_idx:02d}_pos{pos:02d}.pt")
+            if not os.path.exists(path):
+                raise FileNotFoundError(
+                    f"Missing generated SVM checkpoint for layer {layer_idx} pos {pos}: {path}"
+                )
+            obj = torch.load(path, map_location="cpu")
+            if isinstance(obj, dict) and "w" in obj and "b" in obj:
+                w = obj["w"].float().view(-1)
+                b = torch.as_tensor(obj["b"]).float().view(()).cpu()
+            elif isinstance(obj, torch.Tensor):
+                w = obj.float().view(-1)
+                b = torch.tensor(0.0, dtype=torch.float32)
+            else:
+                raise ValueError(f"Unexpected generated SVM format in {path}")
+            layer_probes[pos] = {
+                "w": w.to(device=device),
+                "b": b.to(device=device),
+            }
+        probes[layer_idx] = layer_probes
+    return probes, resolved_max
+
+
 def class_rep_paths(reps_dir: str) -> tuple[str, str]:
     return os.path.join(reps_dir, "HFx_train.pt"), os.path.join(reps_dir, "HLx_train.pt")
 
