@@ -36,6 +36,41 @@ def load_prompts(args) -> tuple[List[str], List[str]]:
     return prompts, categories
 
 
+def load_prompts_from_file(path: str) -> tuple[List[str], List[str]]:
+    """Load an explicit prompt list from a JSON file, bypassing the dataset loader.
+
+    Accepts a list of items, or a dict wrapping the list under "failures" or
+    "prompts" (e.g. results/cle/steering_failures_*.json). Each item may be a
+    bare string or a dict carrying "prompt" (or "instruction") and an optional
+    "category".
+    """
+    import json
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if isinstance(data, dict):
+        items = data.get("failures", data.get("prompts", data.get("items")))
+        if items is None:
+            raise ValueError(f"{path}: expected a list or a dict with 'failures'/'prompts'/'items'")
+    else:
+        items = data
+
+    prompts: List[str] = []
+    categories: List[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            prompt = item.get("prompt", item.get("instruction"))
+            if prompt is None:
+                raise ValueError(f"{path}: item missing 'prompt'/'instruction': {item}")
+            prompts.append(prompt)
+            categories.append(item.get("category", "harmful"))
+        else:
+            prompts.append(item)
+            categories.append("harmful")
+    return prompts, categories
+
+
 def validate_probe_dims(probes: Dict[int, Dict[str, torch.Tensor]], layer_indices: List[int], hidden_dim: int) -> None:
     for layer_idx in layer_indices:
         if probes[layer_idx]["w"].numel() != hidden_dim:
