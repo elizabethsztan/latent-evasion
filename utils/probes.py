@@ -63,15 +63,18 @@ def load_svms(svm_dir: str, layer_indices: List[int], device: torch.device) -> P
         if isinstance(obj, torch.Tensor):
             w = obj.float().view(-1)
             b = torch.tensor(0.0, dtype=torch.float32)
+            margin = 0.0
         elif isinstance(obj, dict) and "w" in obj and "b" in obj:
             w = obj["w"].float().view(-1)
             b = torch.as_tensor(obj["b"]).float().view(()).cpu()
+            margin = float(obj.get("margin", 0.0))
         else:
             raise ValueError(f"Unexpected SVM format in {path}")
 
         probes[layer_idx] = {
             "w": w.to(device=device),
             "b": b.to(device=device),
+            "margin": margin,
         }
     return probes
 
@@ -124,14 +127,17 @@ def load_generated_svms(
             if isinstance(obj, dict) and "w" in obj and "b" in obj:
                 w = obj["w"].float().view(-1)
                 b = torch.as_tensor(obj["b"]).float().view(()).cpu()
+                margin = float(obj.get("margin", 0.0))
             elif isinstance(obj, torch.Tensor):
                 w = obj.float().view(-1)
                 b = torch.tensor(0.0, dtype=torch.float32)
+                margin = 0.0
             else:
                 raise ValueError(f"Unexpected generated SVM format in {path}")
             layer_probes[pos] = {
                 "w": w.to(device=device),
                 "b": b.to(device=device),
+                "margin": margin,
             }
         probes[layer_idx] = layer_probes
     return probes, resolved_max

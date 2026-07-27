@@ -83,6 +83,12 @@ def generated_projection_hook(
     (forward hooks fire in layer order), so every hooked layer within a forward
     reads the same generated position; step resets to -1 on every prefill, so
     each new generation call re-initialises itself.
+
+    prompt_margin/gen_margin may be None, meaning "use this probe's own
+    'margin' field instead of a single value shared across every position at
+    this layer" (CLE-S: every (layer, position) probe has its own data-derived
+    margin). Passing an explicit float (CLE-G's CLI-tuned margins) preserves
+    the original single-value-per-layer behavior unchanged.
     """
 
     def hook(module, inputs, output):
@@ -91,12 +97,12 @@ def generated_projection_hook(
             if layer_idx == first_layer:
                 step_state["step"] = -1
             probe = prompt_probe
-            margin = prompt_margin
+            margin = probe.get("margin", 0.0) if prompt_margin is None else prompt_margin
         else:  # decode step (one generated token)
             if layer_idx == first_layer:
                 step_state["step"] += 1
             probe = gen_probes[min(step_state["step"], max_pos)]
-            margin = gen_margin
+            margin = probe.get("margin", 0.0) if gen_margin is None else gen_margin
 
         w_local = probe["w"].to(device=h.device, dtype=h.dtype)
         b_local = probe["b"].to(device=h.device, dtype=h.dtype)
