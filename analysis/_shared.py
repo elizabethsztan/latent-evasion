@@ -79,6 +79,126 @@ def project_probe(V, mu, w, b):
     return V @ w, float(w @ mu) + b
 
 
+def draw_single_probe_cascade_panel(
+    ax,
+    X_harm,
+    X_harmless,
+    X_pre,
+    X_post,
+    w,
+    b,
+    layer,
+    acc,
+    grid=300,
+):
+    """Draw one four-cloud pre/post cascade panel against a single probe."""
+    X = np.concatenate([X_harm, X_pre, X_post, X_harmless], axis=0)
+    n_harm_total = len(X_harm) + len(X_pre) + len(X_post)
+    pca, V, Z = oriented_pca(X, w, n_harm_total)
+
+    n0 = len(X_harm)
+    n1 = n0 + len(X_pre)
+    Z_harm = Z[:n0]
+    Z_pre = Z[n0:n1]
+    Z_post = Z[n1:n_harm_total]
+    Z_harmless = Z[n_harm_total:]
+
+    grad, offset = project_probe(V, pca.mean_, w, b)
+
+    pad_x = 0.08 * (Z[:, 0].max() - Z[:, 0].min())
+    pad_y = 0.08 * (Z[:, 1].max() - Z[:, 1].min())
+    xs = np.linspace(Z[:, 0].min() - pad_x, Z[:, 0].max() + pad_x, grid)
+    ys = np.linspace(Z[:, 1].min() - pad_y, Z[:, 1].max() + pad_y, grid)
+    gx, gy = np.meshgrid(xs, ys)
+
+    conf = sigmoid(grad[0] * gx + grad[1] * gy + offset)
+    mesh = ax.pcolormesh(
+        gx,
+        gy,
+        1.0 - conf,
+        cmap="RdBu",
+        vmin=0.0,
+        vmax=1.0,
+        shading="auto",
+        zorder=0,
+        rasterized=True,
+        alpha=0.4,
+    )
+    ax.contour(
+        gx,
+        gy,
+        1.0 - conf,
+        levels=[0.1, 0.25, 0.75, 0.9],
+        colors="0.4",
+        linewidths=0.5,
+        zorder=1,
+    )
+
+    for (x0, y0), (x1, y1) in zip(Z_pre, Z_post):
+        ax.plot(
+            [x0, x1],
+            [y0, y1],
+            color="0.6",
+            linewidth=0.5,
+            alpha=0.5,
+            zorder=1,
+        )
+
+    ax.scatter(
+        Z_harm[:, 0],
+        Z_harm[:, 1],
+        s=16,
+        alpha=0.55,
+        color=HARMFUL_COLOR,
+        edgecolors="none",
+        zorder=2,
+    )
+    ax.scatter(
+        Z_harmless[:, 0],
+        Z_harmless[:, 1],
+        s=16,
+        alpha=0.7,
+        color=HARMLESS_COLOR,
+        edgecolors="none",
+        zorder=2,
+    )
+    ax.scatter(
+        Z_pre[:, 0],
+        Z_pre[:, 1],
+        s=16,
+        alpha=0.85,
+        color=STEERED_COLOR,
+        edgecolors="none",
+        zorder=3,
+    )
+    ax.scatter(
+        Z_post[:, 0],
+        Z_post[:, 1],
+        s=16,
+        alpha=0.85,
+        color=STEERED_POST_COLOR,
+        edgecolors="none",
+        zorder=3,
+    )
+
+    score = grad[0] * gx + grad[1] * gy + offset
+    ax.contour(
+        gx,
+        gy,
+        score,
+        levels=[0.0],
+        colors=[ORIG_BOUNDARY_COLOR],
+        linewidths=2.0,
+        zorder=4,
+    )
+
+    ev = pca.explained_variance_ratio_
+    ax.set_xlabel(f"PC1 ({ev[0]*100:.0f}%)")
+    ax.set_ylabel(f"PC2 ({ev[1]*100:.0f}%)")
+    ax.set_title(f"Layer {layer}  (probe acc {acc:.2f})", fontsize=11)
+    return mesh, ev.sum()
+
+
 def closest_anchor(centroid, grad, offset):
     """Point on the line grad.z + offset = 0 nearest the centroid (keeps it in frame)."""
     return centroid - ((grad @ centroid + offset) / (grad @ grad + 1e-12)) * grad
