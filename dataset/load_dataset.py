@@ -11,6 +11,7 @@ SPLIT_DATASET_FILENAME = os.path.join(dataset_dir_path, 'splits/{harmtype}_{spli
 PROCESSED_DATASET_NAMES = [
     "harmbench_val",
     "harmbench_test",
+    "harmbench_standard",
     "strong_reject",
     "harmless_val",
 ]

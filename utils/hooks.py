@@ -118,6 +118,73 @@ def generated_projection_hook(
     return hook
 
 
+def additive_prompt_generated_hook(
+    prompt_delta: torch.Tensor,
+    gen_probes: Dict[int, Dict[str, torch.Tensor]],
+    beta: float,
+    gen_margin: float,
+    layer_idx: int,
+    first_layer: int,
+    max_pos: int,
+    step_state: Dict[str, int],
+    eps: float = 1e-12,
+):
+    """CLE-A on prompt tokens + CLE-G (live projection) on generated tokens.
+
+    Prefill forwards (seq_len > 1, the prompt) add a FIXED additive delta
+    `prompt_delta` (computed beforehand from a clean prompt pass with the
+    post-instruction probe, exactly as in cle-a.py). Decode forwards
+    (seq_len == 1, one generated token) live-project with
+    gen_probes[min(step, max_pos)] using gen_margin -- identical to
+    generated_projection_hook's decode branch.
+
+    `prompt_delta` is (dim,) or (batch, dim); the batch form is broadcast over
+    the sequence. The lowest-index hooked layer advances the shared step_state,
+    and step resets to -1 on every prefill so each generation call re-inits.
+
+    gen_margin may be None, meaning "use this probe's own 'margin' field"
+    (CLE-S style); an explicit float preserves single-value-per-layer behavior.
+    """
+
+    def hook(module, inputs, output):
+        h = hidden_from_output(output)
+        if h.shape[1] > 1:  # prefill (prompt tokens): fixed additive CLE-A delta
+            if layer_idx == first_layer:
+                step_state["step"] = -1
+            delta = prompt_delta.to(device=h.device, dtype=h.dtype)
+            if delta.ndim == 1:
+                v = delta.view(1, 1, -1)
+            elif delta.ndim == 2:
+                if delta.shape[0] != h.shape[0]:
+                    raise ValueError(
+                        f"Batch delta size mismatch: delta batch={delta.shape[0]} hidden batch={h.shape[0]}"
+                    )
+                v = delta.unsqueeze(1)
+            else:
+                raise ValueError(f"Unexpected delta shape: {tuple(delta.shape)}")
+            h_mod = h + v
+            return replace_hidden(output, h_mod)
+
+        # decode step (one generated token): live projection with the gen probe
+        if layer_idx == first_layer:
+            step_state["step"] += 1
+        probe = gen_probes[min(step_state["step"], max_pos)]
+        margin = probe.get("margin", 0.0) if gen_margin is None else gen_margin
+
+        w_local = probe["w"].to(device=h.device, dtype=h.dtype)
+        b_local = probe["b"].to(device=h.device, dtype=h.dtype)
+        m_local = torch.as_tensor(margin, device=h.device, dtype=h.dtype)
+        w_norm_sq = torch.sum(w_local * w_local).clamp_min(eps)
+
+        raw_score = (h * w_local.view(1, 1, -1)).sum(dim=-1, keepdim=True) + b_local.view(1, 1, 1)
+        score = raw_score + m_local.view(1, 1, 1)
+        h_mod = h - (beta * (score / w_norm_sq) * w_local.view(1, 1, -1))
+
+        return replace_hidden(output, h_mod)
+
+    return hook
+
+
 def add_hook(delta: torch.Tensor):
     def hook(module, inputs, output):
         h = hidden_from_output(output)
